@@ -1,4 +1,10 @@
+Ôªøusing UnityEngine;
+
 using UnityEngine;
+
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 namespace PP.WorldGeneration
 {
@@ -30,6 +36,20 @@ namespace PP.WorldGeneration
         [SerializeField] private float heightViewAlpha = 0.45f;
 
         [SerializeField] private int visualMaxHeight = 12;
+
+        [SerializeField] private bool useClearHeightColors = true;
+
+        [SerializeField] private bool drawHeightNumbers = false;
+
+        [SerializeField] private Color lowHeightColor = new Color(0.50f, 0.75f, 0.38f, 0.75f);
+
+        [SerializeField] private Color midHeightColor = new Color(0.78f, 0.68f, 0.38f, 0.75f);
+
+        [SerializeField] private Color highHeightColor = new Color(0.38f, 0.36f, 0.34f, 0.75f);
+
+        [SerializeField] private Color peakHeightColor = new Color(1f, 0.9f, 0.1f, 0.9f);
+
+        [SerializeField] private Color mountainHeightColor = new Color(0.16f, 0.16f, 0.16f, 0.85f);
 
         private PlateLayerWorldGenerator generator;
 
@@ -167,19 +187,33 @@ namespace PP.WorldGeneration
                         ? 0f
                         : Mathf.Clamp01(chunk.height / (float)visualMaxHeight);
 
-                    // í·Ç¢ÇŸÇ«îñÇ¢óŒÅAçÇÇ¢ÇŸÇ«äDêFäÒÇË
-                    Color low = new Color(0.45f, 0.65f, 0.35f, heightViewAlpha);
-                    Color high = new Color(0.35f, 0.35f, 0.35f, heightViewAlpha);
+                    Color color;
 
-                    Color color = Color.Lerp(low, high, t);
+                    if (useClearHeightColors)
+                    {
+                        if (t < 0.5f)
+                        {
+                            color = Color.Lerp(lowHeightColor, midHeightColor, t / 0.5f);
+                        }
+                        else
+                        {
+                            color = Color.Lerp(midHeightColor, highHeightColor, (t - 0.5f) / 0.5f);
+                        }
+                    }
+                    else
+                    {
+                        Color low = new Color(0.45f, 0.65f, 0.35f, heightViewAlpha);
+                        Color high = new Color(0.35f, 0.35f, 0.35f, heightViewAlpha);
+                        color = Color.Lerp(low, high, t);
+                    }
 
                     if (chunk.isPeak)
                     {
-                        color = new Color(1f, 0.85f, 0.2f, heightViewAlpha);
+                        color = peakHeightColor;
                     }
                     else if (chunk.isMountain)
                     {
-                        color = new Color(0.2f, 0.2f, 0.2f, heightViewAlpha);
+                        color = mountainHeightColor;
                     }
 
                     Vector2 world = generator.ChunkToWorldCenter(chunk.chunkCoord);
@@ -189,6 +223,24 @@ namespace PP.WorldGeneration
                         new Vector3(world.x, world.y, -0.12f),
                         Vector3.one * generator.ChunkWorldSize
                     );
+
+#if UNITY_EDITOR
+if (drawHeightNumbers && chunk.isLand)
+{
+    Handles.color = Color.white;
+
+    GUIStyle style = new GUIStyle();
+    style.normal.textColor = Color.white;
+    style.fontSize = 10;
+    style.alignment = TextAnchor.MiddleCenter;
+
+    Handles.Label(
+        new Vector3(world.x, world.y, -0.5f),
+        chunk.height.ToString(),
+        style
+    );
+}
+#endif
                 }
             }
         }

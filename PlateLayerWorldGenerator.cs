@@ -108,6 +108,8 @@ namespace PP.WorldGeneration
 
         [Header("Mountain")]
         [SerializeField] private int maxConnectionsPerPeak = 2;
+        [Tooltip("山頂をプレート外周から何チャンク内側に置くか。2なら外周2チャンクには生成しない。")]
+        [SerializeField] private int peakInnerMarginChunks = 2;
 
         [Tooltip("2本目の接続で許可する最小角度。90なら、鋭角に曲がる接続を避ける。")]
         [Range(0f, 180f)]
@@ -317,8 +319,8 @@ namespace PP.WorldGeneration
                 int baseChunkY = plate.plateCoord.y * chunksPerPlate;
 
                 // 完全ランダムだと端に寄りすぎるので、中央寄りに出やすくする。
-                int localChunkX = RandomCenteredIndex(chunksPerPlate);
-                int localChunkY = RandomCenteredIndex(chunksPerPlate);
+                int localChunkX = RandomCenteredIndexWithMargin(chunksPerPlate, peakInnerMarginChunks);
+                int localChunkY = RandomCenteredIndexWithMargin(chunksPerPlate, peakInnerMarginChunks);
 
                 Vector2Int peakChunk = new Vector2Int(
                     baseChunkX + localChunkX,
@@ -769,6 +771,24 @@ namespace PP.WorldGeneration
 
             int index = Mathf.FloorToInt(centered * size);
             return Mathf.Clamp(index, 0, size - 1);
+        }
+
+        private int RandomCenteredIndexWithMargin(int size, int margin)
+        {
+            // 例：size=10, margin=2 の場合、2〜7 の中から選ぶ。
+            // margin が大きすぎる場合は安全のため中央寄りに戻す。
+            int safeMargin = Mathf.Clamp(margin, 0, Mathf.Max(0, (size - 1) / 2));
+
+            int min = safeMargin;
+            int max = size - 1 - safeMargin;
+
+            if (min > max)
+            {
+                return size / 2;
+            }
+
+            int selectableSize = max - min + 1;
+            return min + RandomCenteredIndex(selectableSize);
         }
 
         private bool Roll(float chance)
