@@ -125,7 +125,13 @@ namespace PP.WorldGeneration
 
         [SerializeField] private int minLandHeight = 1;
 
-        [SerializeField] private int maxHeightDropPerStep = 2;
+        //[SerializeField] private int minHeightDropPerStep = 1;
+
+        //[SerializeField] private int maxHeightDropPerStep = 2;
+
+        [SerializeField] private float heightDropPerDistance = 0.35f;
+
+        [SerializeField] private int heightNoiseAmount = 1;
 
         [SerializeField] private bool useEightDirectionHeightSpread = false;
 
@@ -585,8 +591,20 @@ namespace PP.WorldGeneration
         private void SpreadHeightsFromMountains()
         {
             Queue<Vector2Int> queue = new Queue<Vector2Int>();
-            bool[,] queued = new bool[ChunkWidth, ChunkHeight];
 
+            int[,] distanceFromRidge = new int[ChunkWidth, ChunkHeight];
+            int[,] sourceHeight = new int[ChunkWidth, ChunkHeight];
+
+            for (int x = 0; x < ChunkWidth; x++)
+            {
+                for (int y = 0; y < ChunkHeight; y++)
+                {
+                    distanceFromRidge[x, y] = -1;
+                    sourceHeight[x, y] = -1;
+                }
+            }
+
+            // 山頂・山脈をBFSの起点にする
             for (int x = 0; x < ChunkWidth; x++)
             {
                 for (int y = 0; y < ChunkHeight; y++)
@@ -595,13 +613,13 @@ namespace PP.WorldGeneration
 
                     if (!chunk.isLand) continue;
 
-                    if (chunk.isPeak || chunk.isMountain)
+                    if ((chunk.isPeak || chunk.isMountain) && chunk.HasHeight)
                     {
-                        if (chunk.HasHeight)
-                        {
-                            queue.Enqueue(new Vector2Int(x, y));
-                            queued[x, y] = true;
-                        }
+                        Vector2Int c = new Vector2Int(x, y);
+                        queue.Enqueue(c);
+
+                        distanceFromRidge[x, y] = 0;
+                        sourceHeight[x, y] = chunk.height;
                     }
                 }
             }
@@ -609,7 +627,6 @@ namespace PP.WorldGeneration
             while (queue.Count > 0)
             {
                 Vector2Int currentCoord = queue.Dequeue();
-                ChunkTerrainData current = chunks[currentCoord.x, currentCoord.y];
 
                 foreach (Vector2Int nextCoord in GetHeightSpreadNeighbors(currentCoord))
                 {
@@ -618,21 +635,23 @@ namespace PP.WorldGeneration
                     ChunkTerrainData next = chunks[nextCoord.x, nextCoord.y];
 
                     if (!next.isLand) continue;
+                    if (distanceFromRidge[nextCoord.x, nextCoord.y] >= 0) continue;
 
-                    // すでに高さがあるなら基本的には更新しない。
-                    // BFS風に「山から外へ一度だけ広げる」方式にする。
-                    if (next.HasHeight) continue;
+                    int nextDistance = distanceFromRidge[currentCoord.x, currentCoord.y] + 1;
+                    int rootHeight = sourceHeight[currentCoord.x, currentCoord.y];
 
-                    int drop = RandomIntInclusive(0, maxHeightDropPerStep);
-                    int nextHeight = Mathf.Max(minLandHeight, current.height - drop);
+                    distanceFromRidge[nextCoord.x, nextCoord.y] = nextDistance;
+                    sourceHeight[nextCoord.x, nextCoord.y] = rootHeight;
+
+                    float rawHeight = rootHeight - nextDistance * heightDropPerDistance;
+                    int noise = RandomIntInclusive(-heightNoiseAmount, heightNoiseAmount);
+
+                    int nextHeight = Mathf.RoundToInt(rawHeight) + noise;
+                    nextHeight = Mathf.Clamp(nextHeight, minLandHeight, rootHeight);
 
                     next.height = nextHeight;
 
-                    if (!queued[nextCoord.x, nextCoord.y])
-                    {
-                        queue.Enqueue(nextCoord);
-                        queued[nextCoord.x, nextCoord.y] = true;
-                    }
+                    queue.Enqueue(nextCoord);
                 }
             }
         }
