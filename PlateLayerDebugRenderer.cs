@@ -22,6 +22,15 @@ namespace PP.WorldGeneration
         [Header("Size")]
         [SerializeField] private float peakRadius = 0.35f;
 
+        [Header("Height Display")]
+        [SerializeField] private bool drawChunkHeights = true;
+
+        [SerializeField] private bool drawOnlyLandChunkHeights = true;
+
+        [SerializeField] private float heightViewAlpha = 0.45f;
+
+        [SerializeField] private int visualMaxHeight = 12;
+
         private PlateLayerWorldGenerator generator;
 
         private void OnValidate()
@@ -44,6 +53,11 @@ namespace PP.WorldGeneration
             if (drawPlates)
             {
                 DrawPlates();
+            }
+
+            if (drawChunkHeights)
+            {
+                DrawChunkHeights();
             }
 
             if (drawMountainChunks)
@@ -125,6 +139,56 @@ namespace PP.WorldGeneration
 
                     Gizmos.color = mountainChunkColor;
                     Gizmos.DrawCube(center, size);
+                }
+            }
+        }
+
+        private void DrawChunkHeights()
+        {
+            ChunkTerrainData[,] chunks = generator.Chunks;
+
+            if (chunks == null)
+            {
+                return;
+            }
+
+            for (int x = 0; x < generator.ChunkWidth; x++)
+            {
+                for (int y = 0; y < generator.ChunkHeight; y++)
+                {
+                    ChunkTerrainData chunk = chunks[x, y];
+
+                    if (drawOnlyLandChunkHeights && !chunk.isLand)
+                    {
+                        continue;
+                    }
+
+                    float t = visualMaxHeight <= 0
+                        ? 0f
+                        : Mathf.Clamp01(chunk.height / (float)visualMaxHeight);
+
+                    // ’á‚¢‚Ù‚Ç”–‚¢—ÎA‚‚¢‚Ù‚ÇŠDFŠñ‚è
+                    Color low = new Color(0.45f, 0.65f, 0.35f, heightViewAlpha);
+                    Color high = new Color(0.35f, 0.35f, 0.35f, heightViewAlpha);
+
+                    Color color = Color.Lerp(low, high, t);
+
+                    if (chunk.isPeak)
+                    {
+                        color = new Color(1f, 0.85f, 0.2f, heightViewAlpha);
+                    }
+                    else if (chunk.isMountain)
+                    {
+                        color = new Color(0.2f, 0.2f, 0.2f, heightViewAlpha);
+                    }
+
+                    Vector2 world = generator.ChunkToWorldCenter(chunk.chunkCoord);
+
+                    Gizmos.color = color;
+                    Gizmos.DrawCube(
+                        new Vector3(world.x, world.y, -0.12f),
+                        Vector3.one * generator.ChunkWorldSize
+                    );
                 }
             }
         }

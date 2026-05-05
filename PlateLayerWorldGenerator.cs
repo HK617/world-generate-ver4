@@ -11,6 +11,22 @@ namespace PP.WorldGeneration
     }
 
     [Serializable]
+    public class ChunkTerrainData
+    {
+        public Vector2Int chunkCoord;
+
+        public bool isLand;
+        public bool isPeak;
+        public bool isMountain;
+
+        // 0 = 海
+        // 1以上 = 陸
+        public int height = -1;
+
+        public bool HasHeight => height >= 0;
+    }
+
+    [Serializable]
     public class PlateLayerData
     {
         public Vector2Int plateCoord;
@@ -100,6 +116,26 @@ namespace PP.WorldGeneration
         [Tooltip("山脈線同士の交差を避ける。")]
         [SerializeField] private bool avoidCrossingMountainLines = true;
 
+        [Header("Chunk Height")]
+        [SerializeField] private int peakMinHeight = 8;
+
+        [SerializeField] private int peakMaxHeight = 12;
+
+        [SerializeField] private int mountainRandomOffset = 1;
+
+        [SerializeField] private int minLandHeight = 1;
+
+        [SerializeField] private int maxHeightDropPerStep = 2;
+
+        [SerializeField] private bool useEightDirectionHeightSpread = false;
+
+        private ChunkTerrainData[,] chunks;
+
+        public ChunkTerrainData[,] Chunks => chunks;
+
+        public int ChunkWidth => plateWidth * chunksPerPlate;
+        public int ChunkHeight => plateHeight * chunksPerPlate;
+
         private System.Random rng;
 
         private PlateLayerData[,] plates;
@@ -136,6 +172,8 @@ namespace PP.WorldGeneration
             CollectLandPlates();
             GeneratePeaks();
             GenerateMountainConnections();
+
+            GenerateChunkTerrainAndHeight();
         }
 
         private void CreatePlateArray()
@@ -414,6 +452,250 @@ namespace PP.WorldGeneration
             }
 
             return false;
+        }
+
+        private void GenerateChunkTerrainAndHeight()
+        {
+            CreateChunkArray();
+            MarkLandChunksFromPlates();
+            AssignPeakHeights();
+            AssignMountainHeights();
+            SpreadHeightsFromMountains();
+            FillRemainingLandChunks();
+        }
+
+        private void CreateChunkArray()
+        {
+            chunks = new ChunkTerrainData[ChunkWidth, ChunkHeight];
+
+            for (int x = 0; x < ChunkWidth; x++)
+            {
+                for (int y = 0; y < ChunkHeight; y++)
+                {
+                    chunks[x, y] = new ChunkTerrainData
+                    {
+                        chunkCoord = new Vector2Int(x, y),
+                        isLand = false,
+                        isPeak = false,
+                        isMountain = false,
+                        height = 0
+                    };
+                }
+            }
+        }
+
+        private void MarkLandChunksFromPlates()
+        {
+            foreach (PlateLayerData plate in landPlates)
+            {
+                int startX = plate.plateCoord.x * chunksPerPlate;
+                int startY = plate.plateCoord.y * chunksPerPlate;
+
+                for (int lx = 0; lx < chunksPerPlate; lx++)
+                {
+                    for (int ly = 0; ly < chunksPerPlate; ly++)
+                    {
+                        int cx = startX + lx;
+                        int cy = startY + ly;
+
+                        if (!IsInsideChunk(cx, cy)) continue;
+
+                        ChunkTerrainData chunk = chunks[cx, cy];
+                        chunk.isLand = true;
+
+                        // 陸だが、まだ高さ未定義
+                        chunk.height = -1;
+                    }
+                }
+            }
+
+            // 海チャンクは高さ0のまま
+        }
+
+        private void AssignPeakHeights()
+        {
+            foreach (PlateLayerData plate in landPlates)
+            {
+                Vector2Int c = plate.peakChunkCoord;
+
+                if (!IsInsideChunk(c.x, c.y)) continue;
+
+                ChunkTerrainData chunk = chunks[c.x, c.y];
+
+                chunk.isLand = true;
+                chunk.isPeak = true;
+                chunk.isMountain = true;
+                chunk.height = RandomIntInclusive(peakMinHeight, peakMaxHeight);
+            }
+        }
+
+        private void AssignMountainHeights()
+        {
+            foreach (MountainConnection connection in mountainConnections)
+            {
+                ChunkTerrainData peakA = GetChunk(connection.a.peakChunkCoord);
+                ChunkTerrainData peakB = GetChunk(connection.b.peakChunkCoord);
+
+                if (peakA == null || peakB == null) continue;
+                if (!peakA.HasHeight || !peakB.HasHeight) continue;
+
+                int count = connection.mountainChunks.Count;
+
+                for (int i = 0; i < count; i++)
+                {
+                    Vector2Int c = connection.mountainChunks[i];
+
+                    if (!IsInsideChunk(c.x, c.y)) continue;
+
+                    ChunkTerrainData chunk = chunks[c.x, c.y];
+
+                    if (!chunk.isLand)
+                    {
+                        continue;
+                    }
+
+                    float t = count <= 1 ? 0f : i / (float)(count - 1);
+
+                    int baseHeight = Mathf.RoundToInt(Mathf.Lerp(peakA.height, peakB.height, t));
+                    int offset = RandomIntInclusive(-mountainRandomOffset, mountainRandomOffset);
+
+                    int height = Mathf.Clamp(
+                        baseHeight + offset,
+                        minLandHeight,
+                        Mathf.Max(peakA.height, peakB.height)
+                    );
+
+                    chunk.isMountain = true;
+
+                    // 山頂チャンクは山頂高さを優先する
+                    if (chunk.isPeak)
+                    {
+                        continue;
+                    }
+
+                    // 複数の山脈が通る場合は高い方を採用
+                    if (!chunk.HasHeight || height > chunk.height)
+                    {
+                        chunk.height = height;
+                    }
+                }
+            }
+        }
+
+        private void SpreadHeightsFromMountains()
+        {
+            Queue<Vector2Int> queue = new Queue<Vector2Int>();
+            bool[,] queued = new bool[ChunkWidth, ChunkHeight];
+
+            for (int x = 0; x < ChunkWidth; x++)
+            {
+                for (int y = 0; y < ChunkHeight; y++)
+                {
+                    ChunkTerrainData chunk = chunks[x, y];
+
+                    if (!chunk.isLand) continue;
+
+                    if (chunk.isPeak || chunk.isMountain)
+                    {
+                        if (chunk.HasHeight)
+                        {
+                            queue.Enqueue(new Vector2Int(x, y));
+                            queued[x, y] = true;
+                        }
+                    }
+                }
+            }
+
+            while (queue.Count > 0)
+            {
+                Vector2Int currentCoord = queue.Dequeue();
+                ChunkTerrainData current = chunks[currentCoord.x, currentCoord.y];
+
+                foreach (Vector2Int nextCoord in GetHeightSpreadNeighbors(currentCoord))
+                {
+                    if (!IsInsideChunk(nextCoord.x, nextCoord.y)) continue;
+
+                    ChunkTerrainData next = chunks[nextCoord.x, nextCoord.y];
+
+                    if (!next.isLand) continue;
+
+                    // すでに高さがあるなら基本的には更新しない。
+                    // BFS風に「山から外へ一度だけ広げる」方式にする。
+                    if (next.HasHeight) continue;
+
+                    int drop = RandomIntInclusive(0, maxHeightDropPerStep);
+                    int nextHeight = Mathf.Max(minLandHeight, current.height - drop);
+
+                    next.height = nextHeight;
+
+                    if (!queued[nextCoord.x, nextCoord.y])
+                    {
+                        queue.Enqueue(nextCoord);
+                        queued[nextCoord.x, nextCoord.y] = true;
+                    }
+                }
+            }
+        }
+
+        private void FillRemainingLandChunks()
+        {
+            // 山頂や山脈が存在しない孤立陸プレートなどの保険。
+            // まだ高さが入っていない陸チャンクがあれば、最低高度を入れる。
+            for (int x = 0; x < ChunkWidth; x++)
+            {
+                for (int y = 0; y < ChunkHeight; y++)
+                {
+                    ChunkTerrainData chunk = chunks[x, y];
+
+                    if (!chunk.isLand) continue;
+
+                    if (!chunk.HasHeight)
+                    {
+                        chunk.height = minLandHeight;
+                    }
+                }
+            }
+        }
+
+        private IEnumerable<Vector2Int> GetHeightSpreadNeighbors(Vector2Int c)
+        {
+            yield return new Vector2Int(c.x + 1, c.y);
+            yield return new Vector2Int(c.x - 1, c.y);
+            yield return new Vector2Int(c.x, c.y + 1);
+            yield return new Vector2Int(c.x, c.y - 1);
+
+            if (!useEightDirectionHeightSpread)
+            {
+                yield break;
+            }
+
+            yield return new Vector2Int(c.x + 1, c.y + 1);
+            yield return new Vector2Int(c.x + 1, c.y - 1);
+            yield return new Vector2Int(c.x - 1, c.y + 1);
+            yield return new Vector2Int(c.x - 1, c.y - 1);
+        }
+
+        private ChunkTerrainData GetChunk(Vector2Int c)
+        {
+            if (!IsInsideChunk(c.x, c.y)) return null;
+            return chunks[c.x, c.y];
+        }
+
+        private bool IsInsideChunk(int x, int y)
+        {
+            return x >= 0 && x < ChunkWidth && y >= 0 && y < ChunkHeight;
+        }
+
+        private int RandomIntInclusive(int min, int max)
+        {
+            if (max < min)
+            {
+                int temp = min;
+                min = max;
+                max = temp;
+            }
+
+            return rng.Next(min, max + 1);
         }
 
         private List<PlateLayerData> GetAdjacentLandPlates(PlateLayerData plate)
