@@ -10,6 +10,12 @@ namespace PP.WorldGeneration
         Land
     }
 
+    public enum MountainDirectionType
+    {
+        Vertical,
+        Horizontal
+    }
+
     [Serializable]
     public class ChunkTerrainData
     {
@@ -50,6 +56,8 @@ namespace PP.WorldGeneration
     {
         public PlateLayerData a;
         public PlateLayerData b;
+
+        public MountainDirectionType directionType = MountainDirectionType.Vertical;
 
         // この山脈が通るチャンク座標
         public List<Vector2Int> mountainChunks = new();
@@ -716,6 +724,10 @@ namespace PP.WorldGeneration
                 if (!peakA.HasHeight || !peakB.HasHeight) continue;
 
                 bool isVerticalMountain = IsVerticalMountain(connection);
+
+                connection.directionType = isVerticalMountain
+    ? MountainDirectionType.Vertical
+    : MountainDirectionType.Horizontal;
 
                 int count = connection.mountainChunks.Count;
 

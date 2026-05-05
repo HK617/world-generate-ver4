@@ -23,6 +23,10 @@ namespace PP.WorldGeneration
         [SerializeField] private Color mountainLineColor = new Color(0.25f, 0.25f, 0.25f, 1f);
         [SerializeField] private Color mountainChunkColor = new Color(0.15f, 0.15f, 0.15f, 0.35f);
 
+        [SerializeField] private Color verticalMountainChunkColor = new Color(0.1f, 0.2f, 1f, 0.65f);
+
+        [SerializeField] private Color horizontalMountainChunkColor = new Color(1f, 0.25f, 0.1f, 0.65f);
+
         [Header("Size")]
         [SerializeField] private float peakRadius = 0.35f;
 
@@ -139,7 +143,10 @@ namespace PP.WorldGeneration
                 Vector3 a = new Vector3(connection.a.peakWorldPos.x, connection.a.peakWorldPos.y, -0.2f);
                 Vector3 b = new Vector3(connection.b.peakWorldPos.x, connection.b.peakWorldPos.y, -0.2f);
 
-                Gizmos.color = mountainLineColor;
+                Gizmos.color = connection.directionType == MountainDirectionType.Vertical
+                    ? verticalMountainChunkColor
+                    : horizontalMountainChunkColor;
+
                 Gizmos.DrawLine(a, b);
             }
         }
@@ -148,6 +155,10 @@ namespace PP.WorldGeneration
         {
             foreach (MountainConnection connection in generator.MountainConnections)
             {
+                Color color = connection.directionType == MountainDirectionType.Vertical
+                    ? verticalMountainChunkColor
+                    : horizontalMountainChunkColor;
+
                 foreach (Vector2Int chunk in connection.mountainChunks)
                 {
                     Vector2 world = generator.ChunkToWorldCenter(chunk);
@@ -155,7 +166,7 @@ namespace PP.WorldGeneration
                     Vector3 center = new Vector3(world.x, world.y, -0.15f);
                     Vector3 size = Vector3.one * generator.ChunkWorldSize;
 
-                    Gizmos.color = mountainChunkColor;
+                    Gizmos.color = color;
                     Gizmos.DrawCube(center, size);
                 }
             }
