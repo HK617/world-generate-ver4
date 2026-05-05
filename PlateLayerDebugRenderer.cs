@@ -35,6 +35,8 @@ namespace PP.WorldGeneration
 
         [SerializeField] private bool drawOnlyLandChunkHeights = true;
 
+        [SerializeField] private bool highlightPeakAndMountainInHeightView = true;
+
         [SerializeField] private float heightViewAlpha = 0.45f;
 
         [SerializeField] private int visualMaxHeight = 12;
@@ -216,13 +218,16 @@ namespace PP.WorldGeneration
                         color = Color.Lerp(low, high, t);
                     }
 
-                    if (chunk.isPeak)
+                    if (highlightPeakAndMountainInHeightView)
                     {
-                        color = peakHeightColor;
-                    }
-                    else if (chunk.isMountain)
-                    {
-                        color = mountainHeightColor;
+                        if (chunk.isPeak)
+                        {
+                            color = peakHeightColor;
+                        }
+                        else if (chunk.isMountain)
+                        {
+                            color = mountainHeightColor;
+                        }
                     }
 
                     Vector2 world = generator.ChunkToWorldCenter(chunk.chunkCoord);
