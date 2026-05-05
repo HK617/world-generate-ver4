@@ -107,11 +107,12 @@ namespace PP.WorldGeneration
         [SerializeField] private float horizontalBridgeLandChance = 0.45f;
 
         [Header("Mountain")]
-        [SerializeField] private int maxConnectionsPerPeak = 2;
+        [SerializeField] private int maxConnectionsPerPeak = 3;
+
         [Tooltip("山頂をプレート外周から何チャンク内側に置くか。2なら外周2チャンクには生成しない。")]
         [SerializeField] private int peakInnerMarginChunks = 2;
 
-        [Tooltip("2本目の接続で許可する最小角度。90なら、鋭角に曲がる接続を避ける。")]
+        [Tooltip("追加接続で許可する最小角度。90なら鋭角に曲がる接続を避ける。")]
         [Range(0f, 180f)]
         [SerializeField] private float secondConnectionMinAngle = 90f;
 
@@ -120,22 +121,29 @@ namespace PP.WorldGeneration
 
         [Header("Chunk Height")]
         [SerializeField] private int peakMinHeight = 8;
-
         [SerializeField] private int peakMaxHeight = 12;
-
-        [SerializeField] private int mountainRandomOffset = 1;
 
         [SerializeField] private int minLandHeight = 1;
 
-        //[SerializeField] private int minHeightDropPerStep = 1;
+        [Header("Primary Height")]
+        [Tooltip("1次高さ設定。山頂から1チャンク離れるごとにどれくらい高さを下げるか。")]
+        [SerializeField] private float primaryHeightDropPerChunk = 0.55f;
 
-        //[SerializeField] private int maxHeightDropPerStep = 2;
+        [SerializeField] private int primaryHeightNoiseAmount = 1;
 
-        [SerializeField] private float heightDropPerDistance = 0.35f;
+        [Header("Secondary Mountain Height")]
+        [SerializeField] private int mountainRandomOffset = 1;
 
-        [SerializeField] private int heightNoiseAmount = 1;
+        [Tooltip("2次高さ設定。山脈から1チャンク離れるごとにどれくらい高さを下げるか。")]
+        [SerializeField] private float secondaryHeightDropPerChunk = 0.75f;
 
-        [SerializeField] private bool useEightDirectionHeightSpread = false;
+        [Tooltip("山脈から何チャンク分まで2次高さ設定を広げるか。")]
+        [SerializeField] private int secondaryRidgeSpreadDistance = 8;
+
+        [SerializeField] private int secondaryHeightNoiseAmount = 1;
+
+        [Tooltip("ONなら、2次高さ設定は現在の高さより高い場合だけ上書きする。")]
+        [SerializeField] private bool secondaryOverwriteOnlyWhenHigher = true;
 
         private ChunkTerrainData[,] chunks;
 
@@ -178,10 +186,16 @@ namespace PP.WorldGeneration
             GeneratePrimaryPlateLayer();
             GenerateSecondaryPlateLayer();
             CollectLandPlates();
+
             GeneratePeaks();
+
+            GenerateChunkTerrainAndPrimaryHeight();
+
             GenerateMountainConnections();
 
-            GenerateChunkTerrainAndHeight();
+            ApplyMountainAndSecondaryHeights();
+
+            FillRemainingLandChunks();
         }
 
         private void CreatePlateArray()
@@ -336,36 +350,133 @@ namespace PP.WorldGeneration
         {
             mountainConnections.Clear();
 
-            // 各陸プレートから見て、隣接陸プレートへの候補を作る。
-            // 近い順に処理することで、自然に短い山脈が優先される。
-            List<(PlateLayerData a, PlateLayerData b, float dist)> candidates = new();
-
             foreach (PlateLayerData plate in landPlates)
             {
-                foreach (PlateLayerData neighbor in GetAdjacentLandPlates(plate))
+                plate.connections.Clear();
+            }
+
+            bool connectedSomething = true;
+            int safety = 0;
+
+            while (connectedSomething && safety < 64)
+            {
+                connectedSomething = false;
+                safety++;
+
+                foreach (PlateLayerData plate in landPlates)
                 {
-                    if (plate.plateCoord.x > neighbor.plateCoord.x)
+                    if (plate.ConnectionCount >= maxConnectionsPerPeak)
                     {
                         continue;
                     }
 
-                    if (plate.plateCoord.x == neighbor.plateCoord.x &&
-                        plate.plateCoord.y > neighbor.plateCoord.y)
+                    PlateLayerData target = FindBestMountainTargetByAngle(plate);
+
+                    if (target == null)
                     {
                         continue;
                     }
 
-                    float d = Vector2.Distance(plate.peakWorldPos, neighbor.peakWorldPos);
-                    candidates.Add((plate, neighbor, d));
+                    if (TryConnect(plate, target))
+                    {
+                        connectedSomething = true;
+                    }
+                }
+            }
+        }
+
+        private PlateLayerData FindBestMountainTargetByAngle(PlateLayerData self)
+        {
+            PlateLayerData best = null;
+            float bestScore = float.NegativeInfinity;
+
+            foreach (PlateLayerData candidate in GetAdjacentLandPlates(self))
+            {
+                if (candidate == null) continue;
+                if (candidate == self) continue;
+
+                if (candidate.ConnectionCount >= maxConnectionsPerPeak)
+                {
+                    continue;
+                }
+
+                if (AlreadyConnected(self, candidate))
+                {
+                    continue;
+                }
+
+                if (!PassesAngleRule(self, candidate))
+                {
+                    continue;
+                }
+
+                if (!PassesAngleRule(candidate, self))
+                {
+                    continue;
+                }
+
+                if (avoidCrossingMountainLines &&
+                    WouldCrossExistingLine(self.peakWorldPos, candidate.peakWorldPos))
+                {
+                    continue;
+                }
+
+                float selfScore = GetAngleScore(self, candidate);
+                float targetScore = GetAngleScore(candidate, self);
+
+                if (selfScore < 0f || targetScore < 0f)
+                {
+                    continue;
+                }
+
+                // 距離は使わない。
+                // 角度が180°に近いものを優先する。
+                // 少しだけ乱数を足して、完全同点時の偏りを減らす。
+                float score = selfScore + targetScore + (float)rng.NextDouble() * 0.001f;
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = candidate;
                 }
             }
 
-            candidates.Sort((c1, c2) => c1.dist.CompareTo(c2.dist));
+            return best;
+        }
 
-            foreach (var candidate in candidates)
+        private float GetAngleScore(PlateLayerData self, PlateLayerData target)
+        {
+            // まだ接続がない場合は角度評価できないので中立点。
+            if (self.ConnectionCount == 0)
             {
-                TryConnect(candidate.a, candidate.b);
+                return 0f;
             }
+
+            Vector2 dirNew = (target.peakWorldPos - self.peakWorldPos).normalized;
+
+            float minAngle = 180f;
+
+            foreach (MountainConnection existing in self.connections)
+            {
+                PlateLayerData other = existing.Other(self);
+                if (other == null) continue;
+
+                Vector2 dirExisting = (other.peakWorldPos - self.peakWorldPos).normalized;
+
+                float angle = Vector2.Angle(dirExisting, dirNew);
+
+                if (angle < secondConnectionMinAngle)
+                {
+                    return -1f;
+                }
+
+                minAngle = Mathf.Min(minAngle, angle);
+            }
+
+            // 複数の既存山脈がある場合、
+            // そのどれかに対して鋭角にならないことを優先しつつ、
+            // 一番近い角度がなるべく180°に近いものを選ぶ。
+            return minAngle;
         }
 
         private bool TryConnect(PlateLayerData a, PlateLayerData b)
@@ -467,8 +578,6 @@ namespace PP.WorldGeneration
             CreateChunkArray();
             MarkLandChunksFromPlates();
             AssignPeakHeights();
-            AssignMountainHeights();
-            SpreadHeightsFromMountains();
             FillRemainingLandChunks();
         }
 
@@ -537,7 +646,66 @@ namespace PP.WorldGeneration
             }
         }
 
-        private void AssignMountainHeights()
+        private void GenerateChunkTerrainAndPrimaryHeight()
+        {
+            CreateChunkArray();
+            MarkLandChunksFromPlates();
+            AssignPeakHeights();
+            ApplyPrimaryHeightsFromPeaks();
+        }
+
+        private void ApplyPrimaryHeightsFromPeaks()
+        {
+            foreach (PlateLayerData plate in landPlates)
+            {
+                Vector2Int peakCoord = plate.peakChunkCoord;
+                ChunkTerrainData peakChunk = GetChunk(peakCoord);
+
+                if (peakChunk == null || !peakChunk.HasHeight)
+                {
+                    continue;
+                }
+
+                int startX = plate.plateCoord.x * chunksPerPlate;
+                int startY = plate.plateCoord.y * chunksPerPlate;
+
+                for (int lx = 0; lx < chunksPerPlate; lx++)
+                {
+                    for (int ly = 0; ly < chunksPerPlate; ly++)
+                    {
+                        int cx = startX + lx;
+                        int cy = startY + ly;
+
+                        if (!IsInsideChunk(cx, cy)) continue;
+
+                        ChunkTerrainData chunk = chunks[cx, cy];
+
+                        if (!chunk.isLand) continue;
+
+                        Vector2Int currentCoord = new Vector2Int(cx, cy);
+
+                        float distance = Vector2Int.Distance(currentCoord, peakCoord);
+
+                        float rawHeight = peakChunk.height - distance * primaryHeightDropPerChunk;
+                        int noise = RandomIntInclusive(-primaryHeightNoiseAmount, primaryHeightNoiseAmount);
+
+                        int height = Mathf.RoundToInt(rawHeight) + noise;
+                        height = Mathf.Clamp(height, minLandHeight, peakChunk.height);
+
+                        if (chunk.isPeak)
+                        {
+                            chunk.height = peakChunk.height;
+                        }
+                        else
+                        {
+                            chunk.height = height;
+                        }
+                    }
+                }
+            }
+        }
+
+        private void ApplyMountainAndSecondaryHeights()
         {
             foreach (MountainConnection connection in mountainConnections)
             {
@@ -546,6 +714,8 @@ namespace PP.WorldGeneration
 
                 if (peakA == null || peakB == null) continue;
                 if (!peakA.HasHeight || !peakB.HasHeight) continue;
+
+                bool isVerticalMountain = IsVerticalMountain(connection);
 
                 int count = connection.mountainChunks.Count;
 
@@ -567,7 +737,7 @@ namespace PP.WorldGeneration
                     int baseHeight = Mathf.RoundToInt(Mathf.Lerp(peakA.height, peakB.height, t));
                     int offset = RandomIntInclusive(-mountainRandomOffset, mountainRandomOffset);
 
-                    int height = Mathf.Clamp(
+                    int mountainHeight = Mathf.Clamp(
                         baseHeight + offset,
                         minLandHeight,
                         Mathf.Max(peakA.height, peakB.height)
@@ -575,86 +745,104 @@ namespace PP.WorldGeneration
 
                     chunk.isMountain = true;
 
-                    // 山頂チャンクは山頂高さを優先する
-                    if (chunk.isPeak)
+                    if (!chunk.isPeak)
                     {
-                        continue;
+                        ApplyHeightToChunk(chunk, mountainHeight);
                     }
 
-                    // 複数の山脈が通る場合は高い方を採用
-                    if (!chunk.HasHeight || height > chunk.height)
+                    if (isVerticalMountain)
                     {
-                        chunk.height = height;
+                        // 縦向き山脈なら、左右方向へ高さを流す
+                        SpreadSecondaryHeightFromMountainChunk(c, mountainHeight, Vector2Int.left);
+                        SpreadSecondaryHeightFromMountainChunk(c, mountainHeight, Vector2Int.right);
+                    }
+                    else
+                    {
+                        // 横向き山脈なら、上下方向へ高さを流す
+                        SpreadSecondaryHeightFromMountainChunk(c, mountainHeight, Vector2Int.up);
+                        SpreadSecondaryHeightFromMountainChunk(c, mountainHeight, Vector2Int.down);
                     }
                 }
             }
         }
 
-        private void SpreadHeightsFromMountains()
+        private bool IsVerticalMountain(MountainConnection connection)
         {
-            Queue<Vector2Int> queue = new Queue<Vector2Int>();
+            Vector2 a = connection.a.peakWorldPos;
+            Vector2 b = connection.b.peakWorldPos;
 
-            int[,] distanceFromRidge = new int[ChunkWidth, ChunkHeight];
-            int[,] sourceHeight = new int[ChunkWidth, ChunkHeight];
+            Vector2 dir = (b - a).normalized;
 
-            for (int x = 0; x < ChunkWidth; x++)
+            // 画面上方向を0°とする
+            float angle = Vector2.SignedAngle(Vector2.up, dir);
+
+            // A→B と B→A の向き違いを同じ山脈として扱うため、
+            // -90°〜90°に正規化する
+            if (angle > 90f)
             {
-                for (int y = 0; y < ChunkHeight; y++)
-                {
-                    distanceFromRidge[x, y] = -1;
-                    sourceHeight[x, y] = -1;
-                }
+                angle -= 180f;
+            }
+            else if (angle < -90f)
+            {
+                angle += 180f;
             }
 
-            // 山頂・山脈をBFSの起点にする
-            for (int x = 0; x < ChunkWidth; x++)
+            // -45°〜45°なら縦向き山脈
+            return angle >= -45f && angle <= 45f;
+        }
+
+        private void SpreadSecondaryHeightFromMountainChunk(
+            Vector2Int origin,
+            int originHeight,
+            Vector2Int direction
+        )
+        {
+            for (int step = 1; step <= secondaryRidgeSpreadDistance; step++)
             {
-                for (int y = 0; y < ChunkHeight; y++)
+                Vector2Int c = origin + direction * step;
+
+                if (!IsInsideChunk(c.x, c.y))
                 {
-                    ChunkTerrainData chunk = chunks[x, y];
+                    break;
+                }
 
-                    if (!chunk.isLand) continue;
+                ChunkTerrainData chunk = chunks[c.x, c.y];
 
-                    if ((chunk.isPeak || chunk.isMountain) && chunk.HasHeight)
-                    {
-                        Vector2Int c = new Vector2Int(x, y);
-                        queue.Enqueue(c);
+                if (!chunk.isLand)
+                {
+                    break;
+                }
 
-                        distanceFromRidge[x, y] = 0;
-                        sourceHeight[x, y] = chunk.height;
-                    }
+                if (chunk.isPeak)
+                {
+                    continue;
+                }
+
+                float rawHeight = originHeight - step * secondaryHeightDropPerChunk;
+                int noise = RandomIntInclusive(-secondaryHeightNoiseAmount, secondaryHeightNoiseAmount);
+
+                int height = Mathf.RoundToInt(rawHeight) + noise;
+                height = Mathf.Clamp(height, minLandHeight, originHeight);
+
+                ApplyHeightToChunk(chunk, height);
+            }
+        }
+
+        private void ApplyHeightToChunk(ChunkTerrainData chunk, int newHeight)
+        {
+            if (chunk == null) return;
+            if (!chunk.isLand) return;
+
+            if (secondaryOverwriteOnlyWhenHigher)
+            {
+                if (!chunk.HasHeight || newHeight > chunk.height)
+                {
+                    chunk.height = newHeight;
                 }
             }
-
-            while (queue.Count > 0)
+            else
             {
-                Vector2Int currentCoord = queue.Dequeue();
-
-                foreach (Vector2Int nextCoord in GetHeightSpreadNeighbors(currentCoord))
-                {
-                    if (!IsInsideChunk(nextCoord.x, nextCoord.y)) continue;
-
-                    ChunkTerrainData next = chunks[nextCoord.x, nextCoord.y];
-
-                    if (!next.isLand) continue;
-                    if (distanceFromRidge[nextCoord.x, nextCoord.y] >= 0) continue;
-
-                    int nextDistance = distanceFromRidge[currentCoord.x, currentCoord.y] + 1;
-                    int rootHeight = sourceHeight[currentCoord.x, currentCoord.y];
-
-                    distanceFromRidge[nextCoord.x, nextCoord.y] = nextDistance;
-                    sourceHeight[nextCoord.x, nextCoord.y] = rootHeight;
-
-                    float rawHeight = rootHeight - nextDistance * heightDropPerDistance;
-                    int noise = RandomIntInclusive(-heightNoiseAmount, heightNoiseAmount);
-
-                    int nextHeight = Mathf.RoundToInt(rawHeight) + noise;
-                    nextHeight = Mathf.Clamp(nextHeight, minLandHeight, rootHeight);
-
-                    next.height = nextHeight;
-
-                    queue.Enqueue(nextCoord);
-                }
+                chunk.height = newHeight;
             }
         }
 
@@ -676,24 +864,6 @@ namespace PP.WorldGeneration
                     }
                 }
             }
-        }
-
-        private IEnumerable<Vector2Int> GetHeightSpreadNeighbors(Vector2Int c)
-        {
-            yield return new Vector2Int(c.x + 1, c.y);
-            yield return new Vector2Int(c.x - 1, c.y);
-            yield return new Vector2Int(c.x, c.y + 1);
-            yield return new Vector2Int(c.x, c.y - 1);
-
-            if (!useEightDirectionHeightSpread)
-            {
-                yield break;
-            }
-
-            yield return new Vector2Int(c.x + 1, c.y + 1);
-            yield return new Vector2Int(c.x + 1, c.y - 1);
-            yield return new Vector2Int(c.x - 1, c.y + 1);
-            yield return new Vector2Int(c.x - 1, c.y - 1);
         }
 
         private ChunkTerrainData GetChunk(Vector2Int c)
@@ -775,8 +945,6 @@ namespace PP.WorldGeneration
 
         private int RandomCenteredIndexWithMargin(int size, int margin)
         {
-            // 例：size=10, margin=2 の場合、2〜7 の中から選ぶ。
-            // margin が大きすぎる場合は安全のため中央寄りに戻す。
             int safeMargin = Mathf.Clamp(margin, 0, Mathf.Max(0, (size - 1) / 2));
 
             int min = safeMargin;
