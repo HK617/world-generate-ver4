@@ -133,22 +133,18 @@ namespace PP.WorldGeneration
 
         [SerializeField] private int minLandHeight = 1;
 
-        [Header("Primary Height")]
-        [Tooltip("1次高さ設定。山頂から1チャンク離れるごとにどれくらい高さを下げるか。")]
-        [SerializeField] private float primaryHeightDropPerChunk = 0.55f;
+        [Header("Height Falloff")]
+        [Tooltip("山頂・山脈から1チャンク離れるごとにどれくらい高さを下げるか。1次高さ設定と2次高さ設定で共通。")]
+        [SerializeField] private float heightDropPerChunk = 0.55f;
 
-        [SerializeField] private int primaryHeightNoiseAmount = 1;
+        [Tooltip("高さに加えるランダム揺らぎ。1次高さ設定と2次高さ設定で共通。")]
+        [SerializeField] private int heightNoiseAmount = 1;
 
         [Header("Secondary Mountain Height")]
         [SerializeField] private int mountainRandomOffset = 1;
 
-        [Tooltip("2次高さ設定。山脈から1チャンク離れるごとにどれくらい高さを下げるか。")]
-        [SerializeField] private float secondaryHeightDropPerChunk = 0.75f;
-
         [Tooltip("山脈から何チャンク分まで2次高さ設定を広げるか。")]
         [SerializeField] private int secondaryRidgeSpreadDistance = 8;
-
-        [SerializeField] private int secondaryHeightNoiseAmount = 1;
 
         [Tooltip("ONなら、2次高さ設定は現在の高さより高い場合だけ上書きする。")]
         [SerializeField] private bool secondaryOverwriteOnlyWhenHigher = true;
@@ -694,11 +690,7 @@ namespace PP.WorldGeneration
 
                         float distance = Vector2Int.Distance(currentCoord, peakCoord);
 
-                        float rawHeight = peakChunk.height - distance * primaryHeightDropPerChunk;
-                        int noise = RandomIntInclusive(-primaryHeightNoiseAmount, primaryHeightNoiseAmount);
-
-                        int height = Mathf.RoundToInt(rawHeight) + noise;
-                        height = Mathf.Clamp(height, minLandHeight, peakChunk.height);
+                        int height = CalculateHeightFromSource(peakChunk.height, distance);
 
                         if (chunk.isPeak)
                         {
@@ -830,11 +822,7 @@ namespace PP.WorldGeneration
                     continue;
                 }
 
-                float rawHeight = originHeight - step * secondaryHeightDropPerChunk;
-                int noise = RandomIntInclusive(-secondaryHeightNoiseAmount, secondaryHeightNoiseAmount);
-
-                int height = Mathf.RoundToInt(rawHeight) + noise;
-                height = Mathf.Clamp(height, minLandHeight, originHeight);
+                int height = CalculateHeightFromSource(originHeight, step);
 
                 ApplyHeightToChunk(chunk, height);
             }
@@ -887,6 +875,22 @@ namespace PP.WorldGeneration
         private bool IsInsideChunk(int x, int y)
         {
             return x >= 0 && x < ChunkWidth && y >= 0 && y < ChunkHeight;
+        }
+
+        private int CalculateHeightFromSource(int sourceHeight, float distance)
+        {
+            float rawHeight = sourceHeight - distance * heightDropPerChunk;
+
+            int noise = 0;
+
+            if (heightNoiseAmount > 0)
+            {
+                noise = RandomIntInclusive(-heightNoiseAmount, heightNoiseAmount);
+            }
+
+            int height = Mathf.RoundToInt(rawHeight) + noise;
+
+            return Mathf.Clamp(height, minLandHeight, sourceHeight);
         }
 
         private int RandomIntInclusive(int min, int max)
