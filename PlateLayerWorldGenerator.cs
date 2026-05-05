@@ -140,9 +140,6 @@ namespace PP.WorldGeneration
         [Tooltip("高さに加えるランダム揺らぎ。1次高さ設定と2次高さ設定で共通。")]
         [SerializeField] private int heightNoiseAmount = 1;
 
-        [Header("Secondary Mountain Height")]
-        [SerializeField] private int mountainRandomOffset = 1;
-
         [Tooltip("山脈から何チャンク分まで2次高さ設定を広げるか。")]
         [SerializeField] private int secondaryRidgeSpreadDistance = 8;
 
@@ -577,14 +574,6 @@ namespace PP.WorldGeneration
             return false;
         }
 
-        private void GenerateChunkTerrainAndHeight()
-        {
-            CreateChunkArray();
-            MarkLandChunksFromPlates();
-            AssignPeakHeights();
-            FillRemainingLandChunks();
-        }
-
         private void CreateChunkArray()
         {
             chunks = new ChunkTerrainData[ChunkWidth, ChunkHeight];
@@ -738,11 +727,14 @@ namespace PP.WorldGeneration
 
                     float t = count <= 1 ? 0f : i / (float)(count - 1);
 
-                    int baseHeight = Mathf.RoundToInt(Mathf.Lerp(peakA.height, peakB.height, t));
-                    int offset = RandomIntInclusive(-mountainRandomOffset, mountainRandomOffset);
+                    int mountainHeight = CalculateSmoothMountainHeight(
+                        peakA.height,
+                        peakB.height,
+                        t
+                    );
 
-                    int mountainHeight = Mathf.Clamp(
-                        baseHeight + offset,
+                    mountainHeight = Mathf.Clamp(
+                        mountainHeight,
                         minLandHeight,
                         Mathf.Max(peakA.height, peakB.height)
                     );
@@ -751,7 +743,7 @@ namespace PP.WorldGeneration
 
                     if (!chunk.isPeak)
                     {
-                        ApplyHeightToChunk(chunk, mountainHeight);
+                        chunk.height = mountainHeight;
                     }
 
                     if (isVerticalMountain)
@@ -903,6 +895,21 @@ namespace PP.WorldGeneration
             }
 
             return rng.Next(min, max + 1);
+        }
+
+        private int CalculateSmoothMountainHeight(
+            int peakAHeight,
+            int peakBHeight,
+            float t
+        )
+        {
+            // t = 0 で山頂A、t = 1 で山頂B
+            // SmoothStepを使うと、山頂付近で急に高さが変わりにくくなる
+            float smoothT = Mathf.SmoothStep(0f, 1f, t);
+
+            float h = Mathf.Lerp(peakAHeight, peakBHeight, smoothT);
+
+            return Mathf.RoundToInt(h);
         }
 
         private List<PlateLayerData> GetAdjacentLandPlates(PlateLayerData plate)
