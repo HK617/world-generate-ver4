@@ -101,13 +101,40 @@ namespace PP.WorldGeneration
         [SerializeField] private bool randomSeedOnPlay = false;
 
         [Header("Primary Plate")]
+        [Tooltip("Tureなら大陸型")]
+        [SerializeField] private bool useContinentPlateGeneration = true;
+
+        [Tooltip("海が陸プレートタイルに変わる確率。大陸型にするなら基本使わない")]
         [Range(0f, 1f)]
         [SerializeField] private float primaryLandChance = 0.10f;
+
+        [Header("Continent Plate")]
+        [SerializeField] private int continentCountMin = 3;
+        [SerializeField] private int continentCountMax = 5;
+
+        [SerializeField] private int continentRadiusXMin = 3;
+        [SerializeField] private int continentRadiusXMax = 6;
+
+        [SerializeField] private int continentRadiusYMin = 3;
+        [SerializeField] private int continentRadiusYMax = 6;
+
+        [Range(0f, 1f)]
+        [SerializeField] private float continentCoreLandChance = 0.95f;
+
+        [Range(0f, 1f)]
+        [SerializeField] private float continentEdgeLandChance = 0.25f;
+
+        [SerializeField] private int continentExpansionIterations = 2;
+
+        [Range(0f, 1f)]
+        [SerializeField] private float continentExpansionChance = 0.35f;
+
+        [SerializeField] private bool removeIsolatedLandPlates = true;
 
         [Header("Secondary Plate")]
         [Tooltip("四方が海の海プレートが陸になる確率。")]
         [Range(0f, 1f)]
-        [SerializeField] private float isolatedSeaToLandChance = 0.15f;
+        [SerializeField] private float isolatedSeaToLandChance = 0.05f;
 
         [Tooltip("上下に陸がある海プレートが陸になる確率。")]
         [Range(0f, 1f)]
@@ -116,6 +143,16 @@ namespace PP.WorldGeneration
         [Tooltip("左右に陸がある海プレートが陸になる確率。")]
         [Range(0f, 1f)]
         [SerializeField] private float horizontalBridgeLandChance = 0.45f;
+
+        [Header("Peak Cleanup")]
+        [SerializeField] private bool removeIsolatedPeakPlatesBeforeHeight = true;
+
+        [Tooltip("周囲8方向の陸プレート数がこの値以下なら、孤立山頂として扱う。")]
+        [SerializeField] private int isolatedPeakMaxLandNeighborCount = 1;
+
+        [Tooltip("孤立山頂プレートを削除する確率。")]
+        [Range(0f, 1f)]
+        [SerializeField] private float isolatedPeakRemoveChance = 0.85f;
 
         [Header("Mountain")]
         [SerializeField] private int maxConnectionsPerPeak = 3;
@@ -187,13 +224,31 @@ namespace PP.WorldGeneration
             rng = new System.Random(seed);
 
             CreatePlateArray();
-            GeneratePrimaryPlateLayer();
+
+            if (useContinentPlateGeneration)
+            {
+                GenerateContinentPlateLayer();
+            }
+            else
+            {
+                GeneratePrimaryPlateLayer();
+            }
+
             GenerateSecondaryPlateLayer();
+
             CollectLandPlates();
 
             GeneratePeaks();
 
+            if (removeIsolatedPeakPlatesBeforeHeight)
+            {
+                RemoveIsolatedPeakPlatesByChance();
+            }
+
             RemovePeaksSurroundedByFourPeaks();
+
+            // 孤立山頂削除で陸プレートを海に戻すので、landPlatesを作り直す
+            CollectLandPlates();
 
             GenerateChunkTerrainAndPrimaryHeight();
 
@@ -240,6 +295,187 @@ namespace PP.WorldGeneration
                     }
                 }
             }
+        }
+
+        private void GenerateContinentPlateLayer()
+        {
+            // まず全プレートを海にする
+            for (int x = 0; x < plateWidth; x++)
+            {
+                for (int y = 0; y < plateHeight; y++)
+                {
+                    plates[x, y].biome = PlateBiome.Sea;
+                }
+            }
+
+            int continentCount = RandomIntInclusive(continentCountMin, continentCountMax);
+
+            for (int i = 0; i < continentCount; i++)
+            {
+                Vector2Int center = new Vector2Int(
+                    RandomIntInclusive(0, plateWidth - 1),
+                    RandomIntInclusive(0, plateHeight - 1)
+                );
+
+                int radiusX = RandomIntInclusive(continentRadiusXMin, continentRadiusXMax);
+                int radiusY = RandomIntInclusive(continentRadiusYMin, continentRadiusYMax);
+
+                AddContinentBlob(center, radiusX, radiusY);
+            }
+
+            ExpandContinents();
+
+            if (removeIsolatedLandPlates)
+            {
+                RemoveIsolatedLandPlates();
+            }
+        }
+
+        private void AddContinentBlob(Vector2Int center, int radiusX, int radiusY)
+        {
+            int minX = Mathf.Max(0, center.x - radiusX);
+            int maxX = Mathf.Min(plateWidth - 1, center.x + radiusX);
+
+            int minY = Mathf.Max(0, center.y - radiusY);
+            int maxY = Mathf.Min(plateHeight - 1, center.y + radiusY);
+
+            for (int x = minX; x <= maxX; x++)
+            {
+                for (int y = minY; y <= maxY; y++)
+                {
+                    float dx = (x - center.x) / Mathf.Max(1f, radiusX);
+                    float dy = (y - center.y) / Mathf.Max(1f, radiusY);
+
+                    float distance01 = Mathf.Sqrt(dx * dx + dy * dy);
+
+                    if (distance01 > 1f)
+                    {
+                        continue;
+                    }
+
+                    float strength = 1f - distance01;
+
+                    float landChance = Mathf.Lerp(
+                        continentEdgeLandChance,
+                        continentCoreLandChance,
+                        strength
+                    );
+
+                    if (Roll(landChance))
+                    {
+                        plates[x, y].biome = PlateBiome.Land;
+                    }
+                }
+            }
+        }
+
+        private void ExpandContinents()
+        {
+            for (int iteration = 0; iteration < continentExpansionIterations; iteration++)
+            {
+                bool[,] shouldBecomeLand = new bool[plateWidth, plateHeight];
+
+                for (int x = 0; x < plateWidth; x++)
+                {
+                    for (int y = 0; y < plateHeight; y++)
+                    {
+                        if (plates[x, y].IsLand)
+                        {
+                            continue;
+                        }
+
+                        int landNeighborCount = CountLandNeighbors8(x, y);
+
+                        if (landNeighborCount <= 0)
+                        {
+                            continue;
+                        }
+
+                        float chance = continentExpansionChance * landNeighborCount / 8f;
+
+                        if (Roll(chance))
+                        {
+                            shouldBecomeLand[x, y] = true;
+                        }
+                    }
+                }
+
+                for (int x = 0; x < plateWidth; x++)
+                {
+                    for (int y = 0; y < plateHeight; y++)
+                    {
+                        if (shouldBecomeLand[x, y])
+                        {
+                            plates[x, y].biome = PlateBiome.Land;
+                        }
+                    }
+                }
+            }
+        }
+
+        private void RemoveIsolatedLandPlates()
+        {
+            bool[,] shouldBecomeSea = new bool[plateWidth, plateHeight];
+
+            for (int x = 0; x < plateWidth; x++)
+            {
+                for (int y = 0; y < plateHeight; y++)
+                {
+                    if (!plates[x, y].IsLand)
+                    {
+                        continue;
+                    }
+
+                    int landNeighborCount = CountLandNeighbors8(x, y);
+
+                    if (landNeighborCount <= 1)
+                    {
+                        shouldBecomeSea[x, y] = true;
+                    }
+                }
+            }
+
+            for (int x = 0; x < plateWidth; x++)
+            {
+                for (int y = 0; y < plateHeight; y++)
+                {
+                    if (shouldBecomeSea[x, y])
+                    {
+                        plates[x, y].biome = PlateBiome.Sea;
+                    }
+                }
+            }
+        }
+
+        private int CountLandNeighbors8(int x, int y)
+        {
+            int count = 0;
+
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    if (dx == 0 && dy == 0)
+                    {
+                        continue;
+                    }
+
+                    int nx = x + dx;
+                    int ny = y + dy;
+
+                    if (!IsInsidePlate(nx, ny))
+                    {
+                        continue;
+                    }
+
+                    if (plates[nx, ny].IsLand)
+                    {
+                        count++;
+                    }
+                }
+            }
+
+            return count;
         }
 
         private void GenerateSecondaryPlateLayer()
@@ -395,6 +631,55 @@ namespace PP.WorldGeneration
                     plate.connections.Clear();
 
                     // デバッグしやすいように無効値にしておく
+                    plate.peakChunkCoord = new Vector2Int(-1, -1);
+                    plate.peakWorldPos = Vector2.zero;
+                }
+            }
+        }
+
+        private void RemoveIsolatedPeakPlatesByChance()
+        {
+            bool[,] removePlate = new bool[plateWidth, plateHeight];
+
+            for (int x = 0; x < plateWidth; x++)
+            {
+                for (int y = 0; y < plateHeight; y++)
+                {
+                    PlateLayerData plate = plates[x, y];
+
+                    if (!plate.HasPeak)
+                    {
+                        continue;
+                    }
+
+                    int landNeighborCount = CountLandNeighbors8(x, y);
+
+                    if (landNeighborCount <= isolatedPeakMaxLandNeighborCount)
+                    {
+                        if (Roll(isolatedPeakRemoveChance))
+                        {
+                            removePlate[x, y] = true;
+                        }
+                    }
+                }
+            }
+
+            for (int x = 0; x < plateWidth; x++)
+            {
+                for (int y = 0; y < plateHeight; y++)
+                {
+                    if (!removePlate[x, y])
+                    {
+                        continue;
+                    }
+
+                    PlateLayerData plate = plates[x, y];
+
+                    // 山頂だけでなく、プレート自体を海に戻す
+                    plate.biome = PlateBiome.Sea;
+                    plate.hasPeak = false;
+                    plate.connections.Clear();
+
                     plate.peakChunkCoord = new Vector2Int(-1, -1);
                     plate.peakWorldPos = Vector2.zero;
                 }
@@ -694,6 +979,11 @@ namespace PP.WorldGeneration
         {
             foreach (PlateLayerData plate in landPlates)
             {
+                if (!plate.IsLand)
+                {
+                    continue;
+                }
+
                 int startX = plate.plateCoord.x * chunksPerPlate;
                 int startY = plate.plateCoord.y * chunksPerPlate;
 
