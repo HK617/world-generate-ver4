@@ -659,35 +659,42 @@ namespace PP.WorldGeneration
                     continue;
                 }
 
-                int startX = plate.plateCoord.x * chunksPerPlate;
-                int startY = plate.plateCoord.y * chunksPerPlate;
+                // 高さが0以下になる距離より外側は調べなくてよい
+                int maxSpreadDistance = Mathf.CeilToInt(
+                    peakChunk.height / Mathf.Max(0.01f, heightDropPerChunk)
+                ) + heightNoiseAmount + 2;
 
-                for (int lx = 0; lx < chunksPerPlate; lx++)
+                int minX = Mathf.Max(0, peakCoord.x - maxSpreadDistance);
+                int maxX = Mathf.Min(ChunkWidth - 1, peakCoord.x + maxSpreadDistance);
+                int minY = Mathf.Max(0, peakCoord.y - maxSpreadDistance);
+                int maxY = Mathf.Min(ChunkHeight - 1, peakCoord.y + maxSpreadDistance);
+
+                for (int cx = minX; cx <= maxX; cx++)
                 {
-                    for (int ly = 0; ly < chunksPerPlate; ly++)
+                    for (int cy = minY; cy <= maxY; cy++)
                     {
-                        int cx = startX + lx;
-                        int cy = startY + ly;
-
-                        if (!IsInsideChunk(cx, cy)) continue;
-
-                        ChunkTerrainData chunk = chunks[cx, cy];
-
-                        if (!chunk.isLand) continue;
-
                         Vector2Int currentCoord = new Vector2Int(cx, cy);
-
                         float distance = Vector2Int.Distance(currentCoord, peakCoord);
 
-                        int height = CalculateHeightFromSource(peakChunk.height, distance);
+                        if (!TryCalculateHeightFromSource(peakChunk.height, distance, out int height))
+                        {
+                            continue;
+                        }
+
+                        ChunkTerrainData chunk = chunks[cx, cy];
 
                         if (chunk.isPeak)
                         {
                             chunk.height = peakChunk.height;
+                            chunk.isLand = true;
                         }
                         else
                         {
-                            chunk.height = height;
+                            ApplyHeightAndLandifyChunk(
+                                chunk,
+                                height,
+                                onlyWhenHigher: true
+                            );
                         }
                     }
                 }
@@ -720,11 +727,6 @@ namespace PP.WorldGeneration
 
                     ChunkTerrainData chunk = chunks[c.x, c.y];
 
-                    if (!chunk.isLand)
-                    {
-                        continue;
-                    }
-
                     float t = count <= 1 ? 0f : i / (float)(count - 1);
 
                     int mountainHeight = CalculateSmoothMountainHeight(
@@ -739,6 +741,7 @@ namespace PP.WorldGeneration
                         Mathf.Max(peakA.height, peakB.height)
                     );
 
+                    chunk.isLand = true;
                     chunk.isMountain = true;
 
                     if (!chunk.isPeak)
@@ -802,39 +805,23 @@ namespace PP.WorldGeneration
                     break;
                 }
 
-                ChunkTerrainData chunk = chunks[c.x, c.y];
-
-                if (!chunk.isLand)
+                if (!TryCalculateHeightFromSource(originHeight, step, out int height))
                 {
                     break;
                 }
+
+                ChunkTerrainData chunk = chunks[c.x, c.y];
 
                 if (chunk.isPeak)
                 {
                     continue;
                 }
 
-                int height = CalculateHeightFromSource(originHeight, step);
-
-                ApplyHeightToChunk(chunk, height);
-            }
-        }
-
-        private void ApplyHeightToChunk(ChunkTerrainData chunk, int newHeight)
-        {
-            if (chunk == null) return;
-            if (!chunk.isLand) return;
-
-            if (secondaryOverwriteOnlyWhenHigher)
-            {
-                if (!chunk.HasHeight || newHeight > chunk.height)
-                {
-                    chunk.height = newHeight;
-                }
-            }
-            else
-            {
-                chunk.height = newHeight;
+                ApplyHeightAndLandifyChunk(
+                    chunk,
+                    height,
+                    secondaryOverwriteOnlyWhenHigher
+                );
             }
         }
 
@@ -936,6 +923,53 @@ namespace PP.WorldGeneration
             {
                 result.Add(p);
             }
+        }
+
+        private void ApplyHeightAndLandifyChunk(
+            ChunkTerrainData chunk,
+            int newHeight,
+            bool onlyWhenHigher
+        )
+        {
+            if (chunk == null) return;
+            if (newHeight < minLandHeight) return;
+
+            // 高さが1以上なら海チャンクでも陸化する
+            chunk.isLand = true;
+
+            if (!onlyWhenHigher)
+            {
+                chunk.height = newHeight;
+                return;
+            }
+
+            if (!chunk.HasHeight || newHeight > chunk.height)
+            {
+                chunk.height = newHeight;
+            }
+        }
+
+        private bool TryCalculateHeightFromSource(int sourceHeight, float distance, out int height)
+        {
+            float rawHeight = sourceHeight - distance * heightDropPerChunk;
+
+            int noise = 0;
+
+            if (heightNoiseAmount > 0)
+            {
+                noise = RandomIntInclusive(-heightNoiseAmount, heightNoiseAmount);
+            }
+
+            int calculatedHeight = Mathf.RoundToInt(rawHeight) + noise;
+
+            if (calculatedHeight < minLandHeight)
+            {
+                height = 0;
+                return false;
+            }
+
+            height = Mathf.Clamp(calculatedHeight, minLandHeight, sourceHeight);
+            return true;
         }
 
         private bool IsLandPlate(int x, int y)
