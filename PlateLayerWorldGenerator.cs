@@ -38,6 +38,8 @@ namespace PP.WorldGeneration
         public Vector2Int plateCoord;
         public PlateBiome biome = PlateBiome.Sea;
 
+        public bool hasPeak = false;
+
         // プレート内に置かれる山頂チャンク座標
         public Vector2Int peakChunkCoord;
 
@@ -48,6 +50,7 @@ namespace PP.WorldGeneration
         public readonly List<MountainConnection> connections = new();
 
         public bool IsLand => biome == PlateBiome.Land;
+        public bool HasPeak => IsLand && hasPeak;
         public int ConnectionCount => connections.Count;
     }
 
@@ -189,6 +192,8 @@ namespace PP.WorldGeneration
             CollectLandPlates();
 
             GeneratePeaks();
+
+            RemovePeaksSurroundedByFourPeaks();
 
             GenerateChunkTerrainAndPrimaryHeight();
 
@@ -344,7 +349,66 @@ namespace PP.WorldGeneration
 
                 plate.peakChunkCoord = peakChunk;
                 plate.peakWorldPos = ChunkToWorldCenter(peakChunk);
+                plate.hasPeak = true;
             }
+        }
+
+        private void RemovePeaksSurroundedByFourPeaks()
+        {
+            bool[,] removePeak = new bool[plateWidth, plateHeight];
+
+            for (int x = 0; x < plateWidth; x++)
+            {
+                for (int y = 0; y < plateHeight; y++)
+                {
+                    PlateLayerData center = plates[x, y];
+
+                    if (!center.HasPeak)
+                    {
+                        continue;
+                    }
+
+                    bool upHasPeak = HasPeakPlate(x, y + 1);
+                    bool downHasPeak = HasPeakPlate(x, y - 1);
+                    bool leftHasPeak = HasPeakPlate(x - 1, y);
+                    bool rightHasPeak = HasPeakPlate(x + 1, y);
+
+                    if (upHasPeak && downHasPeak && leftHasPeak && rightHasPeak)
+                    {
+                        removePeak[x, y] = true;
+                    }
+                }
+            }
+
+            for (int x = 0; x < plateWidth; x++)
+            {
+                for (int y = 0; y < plateHeight; y++)
+                {
+                    if (!removePeak[x, y])
+                    {
+                        continue;
+                    }
+
+                    PlateLayerData plate = plates[x, y];
+
+                    plate.hasPeak = false;
+                    plate.connections.Clear();
+
+                    // デバッグしやすいように無効値にしておく
+                    plate.peakChunkCoord = new Vector2Int(-1, -1);
+                    plate.peakWorldPos = Vector2.zero;
+                }
+            }
+        }
+
+        private bool HasPeakPlate(int x, int y)
+        {
+            if (!IsInsidePlate(x, y))
+            {
+                return false;
+            }
+
+            return plates[x, y].HasPeak;
         }
 
         private void GenerateMountainConnections()
@@ -366,6 +430,11 @@ namespace PP.WorldGeneration
 
                 foreach (PlateLayerData plate in landPlates)
                 {
+                    if (!plate.HasPeak)
+                    {
+                        continue;
+                    }
+
                     if (plate.ConnectionCount >= maxConnectionsPerPeak)
                     {
                         continue;
@@ -388,13 +457,41 @@ namespace PP.WorldGeneration
 
         private PlateLayerData FindBestMountainTargetByAngle(PlateLayerData self)
         {
+            // まず四方だけで探す
+            PlateLayerData bestCardinal = FindBestMountainTargetFromCandidates(
+                self,
+                GetCardinalAdjacentLandPlates(self)
+            );
+
+            if (bestCardinal != null)
+            {
+                return bestCardinal;
+            }
+
+            // 四方で見つからなかった場合だけ、斜め4方向を探す
+            return FindBestMountainTargetFromCandidates(
+                self,
+                GetDiagonalAdjacentLandPlates(self)
+            );
+        }
+
+        private PlateLayerData FindBestMountainTargetFromCandidates(
+            PlateLayerData self,
+            List<PlateLayerData> candidates
+        )
+        {
             PlateLayerData best = null;
             float bestScore = float.NegativeInfinity;
 
-            foreach (PlateLayerData candidate in GetAdjacentLandPlates(self))
+            foreach (PlateLayerData candidate in candidates)
             {
                 if (candidate == null) continue;
                 if (candidate == self) continue;
+
+                if (!candidate.HasPeak)
+                {
+                    continue;
+                }
 
                 if (candidate.ConnectionCount >= maxConnectionsPerPeak)
                 {
@@ -430,9 +527,6 @@ namespace PP.WorldGeneration
                     continue;
                 }
 
-                // 距離は使わない。
-                // 角度が180°に近いものを優先する。
-                // 少しだけ乱数を足して、完全同点時の偏りを減らす。
                 float score = selfScore + targetScore + (float)rng.NextDouble() * 0.001f;
 
                 if (score > bestScore)
@@ -484,6 +578,8 @@ namespace PP.WorldGeneration
         {
             if (a == null || b == null) return false;
             if (a == b) return false;
+
+            if (!a.HasPeak || !b.HasPeak) return false;
 
             if (a.ConnectionCount >= maxConnectionsPerPeak) return false;
             if (b.ConnectionCount >= maxConnectionsPerPeak) return false;
@@ -626,6 +722,11 @@ namespace PP.WorldGeneration
         {
             foreach (PlateLayerData plate in landPlates)
             {
+                if (!plate.HasPeak)
+                {
+                    continue;
+                }
+
                 Vector2Int c = plate.peakChunkCoord;
 
                 if (!IsInsideChunk(c.x, c.y)) continue;
@@ -651,6 +752,11 @@ namespace PP.WorldGeneration
         {
             foreach (PlateLayerData plate in landPlates)
             {
+                if (!plate.HasPeak)
+                {
+                    continue;
+                }
+
                 Vector2Int peakCoord = plate.peakChunkCoord;
                 ChunkTerrainData peakChunk = GetChunk(peakCoord);
 
@@ -903,13 +1009,40 @@ namespace PP.WorldGeneration
         {
             List<PlateLayerData> result = new();
 
+            result.AddRange(GetCardinalAdjacentLandPlates(plate));
+            result.AddRange(GetDiagonalAdjacentLandPlates(plate));
+
+            return result;
+        }
+
+        private List<PlateLayerData> GetCardinalAdjacentLandPlates(PlateLayerData plate)
+        {
+            List<PlateLayerData> result = new();
+
             int x = plate.plateCoord.x;
             int y = plate.plateCoord.y;
 
+            // 四方
             TryAddLand(x + 1, y, result);
             TryAddLand(x - 1, y, result);
             TryAddLand(x, y + 1, result);
             TryAddLand(x, y - 1, result);
+
+            return result;
+        }
+
+        private List<PlateLayerData> GetDiagonalAdjacentLandPlates(PlateLayerData plate)
+        {
+            List<PlateLayerData> result = new();
+
+            int x = plate.plateCoord.x;
+            int y = plate.plateCoord.y;
+
+            // 斜め4方向
+            TryAddLand(x + 1, y + 1, result);
+            TryAddLand(x + 1, y - 1, result);
+            TryAddLand(x - 1, y + 1, result);
+            TryAddLand(x - 1, y - 1, result);
 
             return result;
         }
